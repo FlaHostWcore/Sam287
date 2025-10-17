@@ -51,10 +51,11 @@ const AgendamentosRelay: React.FC = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setSchedules(data);
+        setSchedules(Array.isArray(data) ? data : data.schedules || []);
       }
     } catch (error) {
       console.error('Erro ao carregar agendamentos:', error);
+      setSchedules([]);
     }
   };
 
@@ -67,10 +68,11 @@ const AgendamentosRelay: React.FC = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setLogs(data);
+        setLogs(Array.isArray(data) ? data : data.logs || []);
       }
     } catch (error) {
       console.error('Erro ao carregar logs:', error);
+      setLogs([]);
     }
   };
 
