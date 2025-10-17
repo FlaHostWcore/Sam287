@@ -306,9 +306,6 @@ const ConversaoVideos: React.FC = () => {
         errorMessage = error.message;
       } else if (typeof error === 'string') {
         errorMessage = error;
-      } else if (error && typeof error === 'object') {
-        // Não tentar serializar objetos complexos que podem ter referências circulares
-        errorMessage = 'Erro desconhecido ao processar conversão';
       }
 
       console.error('Erro ao iniciar conversão:', error);

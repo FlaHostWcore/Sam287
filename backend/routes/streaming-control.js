@@ -1164,8 +1164,47 @@ router.post('/start-recording', async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.codigo;
         const userLogin = req.user?.usuario || `user_${userId}`;
+
+        if (!userId) {
+            return res.status(400).json({
+                success: false,
+                error: 'Usuário não identificado'
+            });
+        }
+
         const db = require('../config/database');
 
+        // Verificar se a tabela existe e criar se necessário
+        try {
+            await db.execute('DESCRIBE recording_sessions');
+        } catch (tableError) {
+            console.log('📋 Criando tabela recording_sessions...');
+            try {
+                await db.execute(`
+                    CREATE TABLE IF NOT EXISTS recording_sessions (
+                        codigo INT AUTO_INCREMENT PRIMARY KEY,
+                        codigo_stm INT NOT NULL,
+                        arquivo_destino VARCHAR(255) NOT NULL,
+                        status ENUM('recording', 'stopped', 'error') DEFAULT 'recording',
+                        data_inicio DATETIME DEFAULT CURRENT_TIMESTAMP,
+                        data_fim DATETIME,
+                        tamanho_arquivo BIGINT DEFAULT 0,
+                        INDEX idx_codigo_stm (codigo_stm),
+                        INDEX idx_status (status)
+                    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                `);
+                console.log('✅ Tabela recording_sessions criada com sucesso');
+            } catch (createError) {
+                console.error('❌ Erro ao criar tabela recording_sessions:', createError);
+                return res.status(500).json({
+                    success: false,
+                    error: 'Erro ao preparar sistema de gravação',
+                    details: createError.message
+                });
+            }
+        }
+
+        // Verificar gravações ativas
         const [activeRecordings] = await db.execute(
             'SELECT codigo FROM recording_sessions WHERE codigo_stm = ? AND status = "recording"',
             [userId]
@@ -1180,30 +1219,13 @@ router.post('/start-recording', async (req, res) => {
 
         const fileName = `recording_${Date.now()}.mp4`;
 
-        try {
-            await db.execute('DESCRIBE recording_sessions');
-        } catch {
-            await db.execute(`
-                CREATE TABLE IF NOT EXISTS recording_sessions (
-                    codigo INT AUTO_INCREMENT PRIMARY KEY,
-                    codigo_stm INT NOT NULL,
-                    arquivo_destino VARCHAR(255) NOT NULL,
-                    status ENUM('recording', 'stopped', 'error') DEFAULT 'recording',
-                    data_inicio DATETIME DEFAULT CURRENT_TIMESTAMP,
-                    data_fim DATETIME,
-                    tamanho_arquivo BIGINT DEFAULT 0,
-                    INDEX idx_codigo_stm (codigo_stm),
-                    INDEX idx_status (status)
-                )
-            `);
-        }
-
+        // Inserir nova gravação
         const [result] = await db.execute(
             'INSERT INTO recording_sessions (codigo_stm, arquivo_destino, status, data_inicio) VALUES (?, ?, "recording", NOW())',
             [userId, fileName]
         );
 
-        console.log(`🎥 Gravação iniciada para usuário ${userLogin}`);
+        console.log(`🎥 Gravação iniciada para usuário ${userLogin} (ID: ${userId})`);
 
         return res.json({
             success: true,
@@ -1213,11 +1235,13 @@ router.post('/start-recording', async (req, res) => {
         });
 
     } catch (error) {
-        console.error('Erro ao iniciar gravação:', error);
+        console.error('❌ Erro ao iniciar gravação:', error);
+        console.error('Stack trace:', error.stack);
         res.status(500).json({
             success: false,
             error: 'Erro ao iniciar gravação',
-            details: error.message
+            details: error.message,
+            type: error.constructor.name
         });
     }
 });
