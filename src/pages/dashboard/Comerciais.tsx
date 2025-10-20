@@ -208,11 +208,41 @@ const Comerciais: React.FC = () => {
       });
 
       if (response.ok) {
-        toast.success(`Comerciais ${!ativo ? 'ativados' : 'desativados'}!`);
+        const newStatus = !ativo;
+        toast.success(`Comerciais ${newStatus ? 'ativados' : 'desativados'}!`);
+
+        if (newStatus) {
+          toast.info('Os comerciais foram inseridos automaticamente na playlist!');
+        }
+
         fetchComerciaisConfigs();
       }
     } catch (error) {
       toast.error('Erro ao alterar status');
+    }
+  };
+
+  const aplicarComerciais = async (id: number) => {
+    if (!confirm('Deseja aplicar os comerciais agora? Isso irá reorganizar a playlist.')) return;
+
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/comerciais/${id}/aplicar`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+      });
+
+      if (response.ok) {
+        toast.success('Comerciais aplicados à playlist com sucesso!');
+      } else {
+        const error = await response.json();
+        toast.error(error.error || 'Erro ao aplicar comerciais');
+      }
+    } catch (error) {
+      toast.error('Erro ao aplicar comerciais');
     }
   };
 
@@ -439,6 +469,13 @@ const Comerciais: React.FC = () => {
                           <Settings className="h-4 w-4" />
                         </button>
                         <button
+                          onClick={() => aplicarComerciais(config.id!)}
+                          className="p-1 text-purple-600 hover:text-purple-800"
+                          title="Aplicar comerciais agora"
+                        >
+                          <Play className="h-4 w-4" />
+                        </button>
+                        <button
                           onClick={() => handleEdit(config)}
                           className="p-1 text-blue-600 hover:text-blue-800"
                           title="Editar"
@@ -537,8 +574,10 @@ const Comerciais: React.FC = () => {
               <li>• <strong>Quantidade:</strong> Defina quantos comerciais inserir por vez</li>
               <li>• <strong>Intervalo:</strong> Configure a cada quantos vídeos inserir comerciais</li>
               <li>• <strong>Visualizar:</strong> Use "Visualizar Comerciais" para ver os vídeos</li>
-              <li>• <strong>Ativar/Desativar:</strong> Controle quando os comerciais são exibidos</li>
-              <li>• <strong>Exemplo:</strong> 2 comerciais a cada 5 vídeos da playlist</li>
+              <li>• <strong>Salvar:</strong> Ao salvar, os comerciais são automaticamente aplicados se estiver ativo</li>
+              <li>• <strong>Aplicar:</strong> Use o botão de Play para aplicar os comerciais manualmente</li>
+              <li>• <strong>Na Playlist:</strong> Os comerciais aparecem na playlist e podem ser reordenados lá</li>
+              <li>• <strong>Exemplo:</strong> 2 comerciais a cada 5 vídeos: V1-V2-V3-V4-V5-C1-C2-V6-V7...</li>
             </ul>
           </div>
         </div>
