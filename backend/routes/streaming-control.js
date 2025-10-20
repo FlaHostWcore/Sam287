@@ -1173,9 +1173,6 @@ router.post('/start-recording', async (req, res) => {
         }
 
         const db = require('../config/database');
-        const { spawn } = require('child_process');
-        const path = require('path');
-        const fs = require('fs').promises;
 
         // Verificar se a tabela existe e criar se necessário
         try {
@@ -1237,50 +1234,54 @@ router.post('/start-recording', async (req, res) => {
         const wowzaHost = serverRows.length > 0 ? (serverRows[0].dominio || serverRows[0].ip) : 'stmv1.udicast.com';
         const streamUrl = `https://${wowzaHost}/${userLogin}/${userLogin}/playlist.m3u8`;
 
-        // Criar pasta de gravações se não existir
-        const recordingsDir = path.join('/var/www/html/content', userLogin, 'gravacoes');
-        try {
-            await fs.mkdir(recordingsDir, { recursive: true });
-        } catch (mkdirError) {
-            console.warn(`⚠️ Aviso ao criar pasta: ${mkdirError.message}`);
+        // Criar pasta de gravações no servidor remoto via SSH
+        const SSHManager = require('../config/SSHManager');
+        const recordingsFolder = 'gravacoes';
+        const folderResult = await SSHManager.createUserFolder(serverId, userLogin, recordingsFolder);
+
+        if (!folderResult.success) {
+            console.warn(`⚠️ Aviso ao criar pasta de gravações: ${folderResult.error}`);
         }
 
+        // Caminho remoto para gravação
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
         const fileName = `recording_${timestamp}.mp4`;
-        const fullPath = path.join(recordingsDir, fileName);
+        const fullPath = `/home/streaming/${userLogin}/${recordingsFolder}/${fileName}`;
 
-        // Iniciar processo ffmpeg para gravar
-        const ffmpegArgs = [
-            '-i', streamUrl,
-            '-c', 'copy',
-            '-bsf:a', 'aac_adtstoasc',
-            '-y',
-            fullPath
-        ];
+        console.log(`📁 Pasta de gravações: /home/streaming/${userLogin}/${recordingsFolder}`);
+        console.log(`📹 Arquivo de gravação: ${fileName}`);
 
-        console.log(`🎥 Iniciando gravação com ffmpeg: ${streamUrl} -> ${fullPath}`);
+        // Comando ffmpeg para executar no servidor remoto
+        const ffmpegCommand = `nohup ffmpeg -i "${streamUrl}" -c copy -bsf:a aac_adtstoasc -y "${fullPath}" > /dev/null 2>&1 & echo $!`;
 
-        const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
-        const pid = ffmpegProcess.pid;
+        console.log(`🎥 Iniciando gravação com ffmpeg no servidor remoto...`);
+        console.log(`📍 Comando: ${ffmpegCommand}`);
 
-        ffmpegProcess.stderr.on('data', (data) => {
-            // Log de progresso do ffmpeg
-            console.log(`FFmpeg: ${data.toString().trim()}`);
-        });
+        // Executar ffmpeg no servidor remoto via SSH
+        const ffmpegResult = await SSHManager.executeCommand(serverId, ffmpegCommand);
 
-        ffmpegProcess.on('error', (error) => {
-            console.error('❌ Erro no processo ffmpeg:', error);
-        });
+        if (!ffmpegResult.success && !ffmpegResult.stdout) {
+            throw new Error(`Erro ao iniciar ffmpeg no servidor: ${ffmpegResult.stderr}`);
+        }
+
+        // Obter PID do processo ffmpeg
+        const pid = parseInt(ffmpegResult.stdout.trim());
+
+        if (!pid || isNaN(pid)) {
+            console.warn(`⚠️ Não foi possível obter PID do ffmpeg. Output: ${ffmpegResult.stdout}`);
+        }
+
+        console.log(`✅ Gravação iniciada no servidor remoto (PID: ${pid || 'desconhecido'})`);
 
         // Inserir nova gravação no banco
         const [result] = await db.execute(
             `INSERT INTO recording_sessions
              (codigo_stm, arquivo_destino, caminho_completo, status, data_inicio, process_id)
              VALUES (?, ?, ?, "recording", NOW(), ?)`,
-            [userId, fileName, fullPath, pid]
+            [userId, fileName, fullPath, pid || null]
         );
 
-        console.log(`✅ Gravação iniciada para usuário ${userLogin} (PID: ${pid})`);
+        console.log(`✅ Gravação registrada no banco com ID: ${result.insertId}`);
 
         return res.json({
             success: true,
@@ -1288,7 +1289,8 @@ router.post('/start-recording', async (req, res) => {
             fileName: fileName,
             fullPath: fullPath,
             message: 'Gravação iniciada com sucesso',
-            streamUrl: streamUrl
+            streamUrl: streamUrl,
+            serverId: serverId
         });
 
     } catch (error) {
@@ -1311,7 +1313,6 @@ router.post('/stop-recording', async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.codigo;
         const db = require('../config/database');
-        const fs = require('fs').promises;
 
         const [recordings] = await db.execute(
             'SELECT * FROM recording_sessions WHERE codigo_stm = ? AND status = "recording"',
@@ -1327,25 +1328,37 @@ router.post('/stop-recording', async (req, res) => {
 
         const recording = recordings[0];
 
-        // Parar processo ffmpeg se estiver rodando
+        // Buscar servidor do usuário
+        const [streamingRows] = await db.execute(
+            'SELECT codigo_servidor FROM streamings WHERE codigo_cliente = ? LIMIT 1',
+            [userId]
+        );
+        const serverId = streamingRows.length > 0 ? streamingRows[0].codigo_servidor : 1;
+
+        // Parar processo ffmpeg no servidor remoto se estiver rodando
         if (recording.process_id) {
             try {
-                process.kill(recording.process_id, 'SIGTERM');
-                console.log(`⏹️ Processo ffmpeg (PID: ${recording.process_id}) finalizado`);
+                const SSHManager = require('../config/SSHManager');
+                const killCommand = `kill -SIGTERM ${recording.process_id} 2>/dev/null || true`;
+                await SSHManager.executeCommand(serverId, killCommand);
+                console.log(`⏹️ Processo ffmpeg (PID: ${recording.process_id}) finalizado no servidor remoto`);
             } catch (killError) {
                 console.warn(`⚠️ Aviso ao parar processo: ${killError.message}`);
             }
         }
 
         // Aguardar um pouco para o arquivo ser finalizado
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // Obter tamanho do arquivo
+        // Obter tamanho do arquivo no servidor remoto
         let fileSize = 0;
         if (recording.caminho_completo) {
             try {
-                const stats = await fs.stat(recording.caminho_completo);
-                fileSize = stats.size;
+                const SSHManager = require('../config/SSHManager');
+                const sizeCommand = `stat -c%s "${recording.caminho_completo}" 2>/dev/null || echo "0"`;
+                const sizeResult = await SSHManager.executeCommand(serverId, sizeCommand);
+                fileSize = parseInt(sizeResult.stdout.trim()) || 0;
+                console.log(`📊 Tamanho do arquivo obtido: ${fileSize} bytes`);
             } catch (statError) {
                 console.warn(`⚠️ Aviso ao obter tamanho do arquivo: ${statError.message}`);
             }

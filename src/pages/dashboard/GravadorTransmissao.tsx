@@ -33,9 +33,12 @@ const GravadorTransmissao: React.FC = () => {
     if (recording.isRecording && recording.startTime) {
       timer = setInterval(() => {
         const start = new Date(recording.startTime!).getTime();
-        const now = new Date().getTime();
-        setElapsed(Math.floor((now - start) / 1000));
+        const now = Date.now();
+        const diff = Math.max(0, Math.floor((now - start) / 1000));
+        setElapsed(diff);
       }, 1000);
+    } else {
+      setElapsed(0);
     }
     return () => clearInterval(timer);
   }, [recording.isRecording, recording.startTime]);
@@ -50,6 +53,15 @@ const GravadorTransmissao: React.FC = () => {
       if (response.ok) {
         const data = await response.json();
         setRecording(data);
+
+        if (data.isRecording && data.startTime) {
+          const start = new Date(data.startTime).getTime();
+          const now = Date.now();
+          const diff = Math.max(0, Math.floor((now - start) / 1000));
+          setElapsed(diff);
+        } else {
+          setElapsed(0);
+        }
       }
     } catch (error) {
       console.error('Erro ao verificar status de gravação:', error);
