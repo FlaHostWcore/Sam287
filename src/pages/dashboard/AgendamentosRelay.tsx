@@ -169,6 +169,9 @@ const AgendamentosRelay: React.FC = () => {
       return `Executar diariamente às ${schedule.hora}:${schedule.minuto}`;
     } else {
       const diasSemana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+      if (!schedule.dias) {
+        return `Executar às ${schedule.hora}:${schedule.minuto}`;
+      }
       const dias = schedule.dias.split(',').filter(d => d).map(d => diasSemana[parseInt(d) - 1]).join(', ');
       return `Executar ${dias} às ${schedule.hora}:${schedule.minuto}`;
     }

@@ -1144,7 +1144,7 @@ router.get('/recording-status', async (req, res) => {
         return res.json({
             isRecording: true,
             fileName: recording.arquivo_destino,
-            startTime: recording.data_inicio,
+            startTime: new Date(recording.data_inicio).toISOString(),
             recordingId: recording.codigo
         });
 
@@ -1173,6 +1173,9 @@ router.post('/start-recording', async (req, res) => {
         }
 
         const db = require('../config/database');
+        const { spawn } = require('child_process');
+        const path = require('path');
+        const fs = require('fs').promises;
 
         // Verificar se a tabela existe e criar se necessário
         try {
@@ -1185,10 +1188,12 @@ router.post('/start-recording', async (req, res) => {
                         codigo INT AUTO_INCREMENT PRIMARY KEY,
                         codigo_stm INT NOT NULL,
                         arquivo_destino VARCHAR(255) NOT NULL,
+                        caminho_completo VARCHAR(500),
                         status ENUM('recording', 'stopped', 'error') DEFAULT 'recording',
                         data_inicio DATETIME DEFAULT CURRENT_TIMESTAMP,
                         data_fim DATETIME,
                         tamanho_arquivo BIGINT DEFAULT 0,
+                        process_id INT,
                         INDEX idx_codigo_stm (codigo_stm),
                         INDEX idx_status (status)
                     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
@@ -1217,21 +1222,73 @@ router.post('/start-recording', async (req, res) => {
             });
         }
 
-        const fileName = `recording_${Date.now()}.mp4`;
-
-        // Inserir nova gravação
-        const [result] = await db.execute(
-            'INSERT INTO recording_sessions (codigo_stm, arquivo_destino, status, data_inicio) VALUES (?, ?, "recording", NOW())',
-            [userId, fileName]
+        // Buscar servidor e criar estrutura de pastas
+        const [streamingRows] = await db.execute(
+            'SELECT codigo_servidor FROM streamings WHERE codigo_cliente = ? LIMIT 1',
+            [userId]
         );
 
-        console.log(`🎥 Gravação iniciada para usuário ${userLogin} (ID: ${userId})`);
+        const serverId = streamingRows.length > 0 ? streamingRows[0].codigo_servidor : 1;
+        const [serverRows] = await db.execute(
+            'SELECT ip, dominio FROM wowza_servers WHERE codigo = ?',
+            [serverId]
+        );
+
+        const wowzaHost = serverRows.length > 0 ? (serverRows[0].dominio || serverRows[0].ip) : 'stmv1.udicast.com';
+        const streamUrl = `https://${wowzaHost}/${userLogin}/${userLogin}/playlist.m3u8`;
+
+        // Criar pasta de gravações se não existir
+        const recordingsDir = path.join('/var/www/html/content', userLogin, 'gravacoes');
+        try {
+            await fs.mkdir(recordingsDir, { recursive: true });
+        } catch (mkdirError) {
+            console.warn(`⚠️ Aviso ao criar pasta: ${mkdirError.message}`);
+        }
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const fileName = `recording_${timestamp}.mp4`;
+        const fullPath = path.join(recordingsDir, fileName);
+
+        // Iniciar processo ffmpeg para gravar
+        const ffmpegArgs = [
+            '-i', streamUrl,
+            '-c', 'copy',
+            '-bsf:a', 'aac_adtstoasc',
+            '-y',
+            fullPath
+        ];
+
+        console.log(`🎥 Iniciando gravação com ffmpeg: ${streamUrl} -> ${fullPath}`);
+
+        const ffmpegProcess = spawn('ffmpeg', ffmpegArgs);
+        const pid = ffmpegProcess.pid;
+
+        ffmpegProcess.stderr.on('data', (data) => {
+            // Log de progresso do ffmpeg
+            console.log(`FFmpeg: ${data.toString().trim()}`);
+        });
+
+        ffmpegProcess.on('error', (error) => {
+            console.error('❌ Erro no processo ffmpeg:', error);
+        });
+
+        // Inserir nova gravação no banco
+        const [result] = await db.execute(
+            `INSERT INTO recording_sessions
+             (codigo_stm, arquivo_destino, caminho_completo, status, data_inicio, process_id)
+             VALUES (?, ?, ?, "recording", NOW(), ?)`,
+            [userId, fileName, fullPath, pid]
+        );
+
+        console.log(`✅ Gravação iniciada para usuário ${userLogin} (PID: ${pid})`);
 
         return res.json({
             success: true,
             recordingId: result.insertId,
             fileName: fileName,
-            message: 'Gravação iniciada com sucesso'
+            fullPath: fullPath,
+            message: 'Gravação iniciada com sucesso',
+            streamUrl: streamUrl
         });
 
     } catch (error) {
@@ -1254,9 +1311,10 @@ router.post('/stop-recording', async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.codigo;
         const db = require('../config/database');
+        const fs = require('fs').promises;
 
         const [recordings] = await db.execute(
-            'SELECT codigo FROM recording_sessions WHERE codigo_stm = ? AND status = "recording"',
+            'SELECT * FROM recording_sessions WHERE codigo_stm = ? AND status = "recording"',
             [userId]
         );
 
@@ -1267,16 +1325,49 @@ router.post('/stop-recording', async (req, res) => {
             });
         }
 
+        const recording = recordings[0];
+
+        // Parar processo ffmpeg se estiver rodando
+        if (recording.process_id) {
+            try {
+                process.kill(recording.process_id, 'SIGTERM');
+                console.log(`⏹️ Processo ffmpeg (PID: ${recording.process_id}) finalizado`);
+            } catch (killError) {
+                console.warn(`⚠️ Aviso ao parar processo: ${killError.message}`);
+            }
+        }
+
+        // Aguardar um pouco para o arquivo ser finalizado
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Obter tamanho do arquivo
+        let fileSize = 0;
+        if (recording.caminho_completo) {
+            try {
+                const stats = await fs.stat(recording.caminho_completo);
+                fileSize = stats.size;
+            } catch (statError) {
+                console.warn(`⚠️ Aviso ao obter tamanho do arquivo: ${statError.message}`);
+            }
+        }
+
+        // Atualizar registro no banco
         await db.execute(
-            'UPDATE recording_sessions SET status = "stopped", data_fim = NOW() WHERE codigo = ?',
-            [recordings[0].codigo]
+            'UPDATE recording_sessions SET status = "stopped", data_fim = NOW(), tamanho_arquivo = ? WHERE codigo = ?',
+            [fileSize, recording.codigo]
         );
 
-        console.log(`⏹️ Gravação finalizada para usuário ${userId}`);
+        console.log(`✅ Gravação finalizada para usuário ${userId}`);
+        console.log(`📁 Arquivo: ${recording.caminho_completo}`);
+        console.log(`📊 Tamanho: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
 
         return res.json({
             success: true,
-            message: 'Gravação finalizada com sucesso'
+            message: 'Gravação finalizada com sucesso',
+            fileName: recording.arquivo_destino,
+            filePath: recording.caminho_completo,
+            fileSize: fileSize,
+            fileSizeMB: (fileSize / 1024 / 1024).toFixed(2)
         });
 
     } catch (error) {

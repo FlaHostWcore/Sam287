@@ -308,7 +308,7 @@ const ConversaoVideos: React.FC = () => {
         errorMessage = error;
       }
 
-      console.error('Erro ao iniciar conversão:', error);
+      console.error('Erro ao iniciar conversão');
       toast.error(errorMessage);
 
       setConversionStatuses(prev => ({

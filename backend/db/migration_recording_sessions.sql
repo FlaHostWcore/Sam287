@@ -7,10 +7,12 @@ CREATE TABLE IF NOT EXISTS recording_sessions (
     codigo INT AUTO_INCREMENT PRIMARY KEY COMMENT 'ID único da sessão de gravação',
     codigo_stm INT NOT NULL COMMENT 'ID do streaming/usuário',
     arquivo_destino VARCHAR(255) NOT NULL COMMENT 'Nome do arquivo de destino',
+    caminho_completo VARCHAR(500) NULL COMMENT 'Caminho completo do arquivo no servidor',
     status ENUM('recording', 'stopped', 'error') DEFAULT 'recording' COMMENT 'Status da gravação',
     data_inicio DATETIME DEFAULT CURRENT_TIMESTAMP COMMENT 'Data e hora de início',
     data_fim DATETIME NULL COMMENT 'Data e hora de término',
     tamanho_arquivo BIGINT DEFAULT 0 COMMENT 'Tamanho do arquivo em bytes',
+    process_id INT NULL COMMENT 'PID do processo ffmpeg',
 
     -- Índices para otimização
     INDEX idx_codigo_stm (codigo_stm),
