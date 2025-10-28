@@ -152,11 +152,13 @@ router.post('/', authMiddleware, upload.single('logo'), async (req, res) => {
     );
 
     res.status(201).json({
+      success: true,
       id: result.insertId,
       nome: nome,
       url: `/content/streaming/${userLogin}/logos/${req.file.filename}`,
       tamanho: req.file.size,
-      tipo_arquivo: req.file.mimetype
+      tipo_arquivo: req.file.mimetype,
+      message: 'Logo enviada com sucesso'
     });
   } catch (err) {
     console.error('Erro no upload da logo:', err);
