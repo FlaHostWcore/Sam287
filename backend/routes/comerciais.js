@@ -12,7 +12,7 @@ async function inserirComerciaisNaPlaylist(userId, playlistId, folderId, quantid
     // Buscar vídeos da pasta de comerciais
     const [comerciaisVideos] = await db.execute(
       `SELECT id, nome FROM videos
-       WHERE folder_id = ? AND codigo_cliente = ?
+       WHERE pasta = ? AND codigo_cliente = ?
        ORDER BY nome ASC`,
       [folderId, userId]
     );
