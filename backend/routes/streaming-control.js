@@ -1487,6 +1487,109 @@ router.post('/diagnostics', async (req, res) => {
 });
 
 /**
+ * GET /api/streaming/current-mode
+ * Verificar modo atual de transmissão (playlist, relay ou OBS)
+ */
+router.get('/current-mode', async (req, res) => {
+    try {
+        const userId = req.user?.id || req.user?.codigo;
+        const db = require('../config/database');
+
+        // 1. Prioridade: Agendamento de Playlist ativo
+        const [playlistSchedules] = await db.execute(
+            `SELECT pa.*, p.nome as playlist_nome
+             FROM playlists_agendamentos pa
+             JOIN playlists p ON pa.codigo_playlist = p.id
+             WHERE pa.codigo_stm = ?
+             AND pa.data = CURDATE()
+             AND CONCAT(pa.hora, ':', pa.minuto) <= CURTIME()
+             ORDER BY pa.hora DESC, pa.minuto DESC
+             LIMIT 1`,
+            [userId]
+        );
+
+        if (playlistSchedules.length > 0) {
+            return res.json({
+                success: true,
+                mode: 'playlist_scheduled',
+                priority: 1,
+                active: true,
+                data: {
+                    type: 'playlist',
+                    playlist_id: playlistSchedules[0].codigo_playlist,
+                    playlist_name: playlistSchedules[0].playlist_nome,
+                    schedule_id: playlistSchedules[0].codigo
+                }
+            });
+        }
+
+        // 2. Segunda prioridade: Agendamento de Relay ativo
+        const [relaySchedules] = await db.execute(
+            `SELECT * FROM relay_config
+             WHERE codigo_stm = ? AND status = 'ativo'
+             ORDER BY data_inicio DESC
+             LIMIT 1`,
+            [userId]
+        );
+
+        if (relaySchedules.length > 0) {
+            return res.json({
+                success: true,
+                mode: 'relay_scheduled',
+                priority: 2,
+                active: true,
+                data: {
+                    type: 'relay',
+                    relay_id: relaySchedules[0].codigo,
+                    relay_url: relaySchedules[0].url_origem
+                }
+            });
+        }
+
+        // 3. Terceira prioridade: Transmissão manual (playlist ou relay)
+        const [manualTransmissions] = await db.execute(
+            `SELECT * FROM transmissoes
+             WHERE codigo_stm = ? AND status = 'ativa'
+             ORDER BY data_inicio DESC
+             LIMIT 1`,
+            [userId]
+        );
+
+        if (manualTransmissions.length > 0) {
+            const transmission = manualTransmissions[0];
+            return res.json({
+                success: true,
+                mode: transmission.codigo_playlist ? 'playlist_manual' : 'obs_manual',
+                priority: 3,
+                active: true,
+                data: {
+                    type: transmission.codigo_playlist ? 'playlist' : 'obs',
+                    transmission_id: transmission.codigo,
+                    playlist_id: transmission.codigo_playlist
+                }
+            });
+        }
+
+        // Nenhuma transmissão ativa
+        return res.json({
+            success: true,
+            mode: 'idle',
+            priority: 0,
+            active: false,
+            data: null
+        });
+
+    } catch (error) {
+        console.error('Erro ao verificar modo atual:', error);
+        res.status(500).json({
+            success: false,
+            error: 'Erro ao verificar modo atual',
+            details: error.message
+        });
+    }
+});
+
+/**
  * GET /api/streaming/source-urls
  * Obter URLs de origem para transmissão
  */

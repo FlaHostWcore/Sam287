@@ -262,10 +262,11 @@ const GerenciarLogos: React.FC = () => {
                     <div className="bg-gray-100 rounded-lg p-3 flex items-center justify-center min-h-[120px]">
                       {logo.url ? (
                         <img
-                          src={`https://stmv1.udicast.com/content${logo.url}`}
+                          src={`/api/content${logo.url}`}
                           alt={logo.nome}
                           className="max-h-[100px] max-w-full object-contain"
                           onError={(e) => {
+                            console.error('Erro ao carregar logo:', logo.url);
                             e.currentTarget.src = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect fill="%23ddd"/></svg>';
                           }}
                         />

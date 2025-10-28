@@ -86,10 +86,30 @@ app.use(express.urlencoded({ extended: true, limit: '50mb' }));
 
 app.use('/content', async (req, res, next) => {
   try {
+    const requestPath = req.path.startsWith('/') ? req.path : `/${req.path}`;
+
+    // Permitir acesso público a logos sem autenticação
+    if (requestPath.includes('/logos/')) {
+      const isImageFile = /\.(jpg|jpeg|png|gif|webp|svg)$/i.test(requestPath);
+      if (isImageFile) {
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Cache-Control', 'public, max-age=86400');
+
+        if (requestPath.includes('.jpg') || requestPath.includes('.jpeg')) res.setHeader('Content-Type', 'image/jpeg');
+        else if (requestPath.includes('.png')) res.setHeader('Content-Type', 'image/png');
+        else if (requestPath.includes('.gif')) res.setHeader('Content-Type', 'image/gif');
+        else if (requestPath.includes('.webp')) res.setHeader('Content-Type', 'image/webp');
+        else if (requestPath.includes('.svg')) res.setHeader('Content-Type', 'image/svg+xml');
+
+        return next();
+      }
+    }
+
     let token = null;
     const authHeader = req.headers.authorization;
     if (authHeader && authHeader.startsWith('Bearer ')) token = authHeader.substring(7);
     if (!token && req.query.auth_token) token = req.query.auth_token;
+
     if (!token) return res.status(401).json({ error: 'Token de acesso requerido' });
 
     try {
@@ -101,7 +121,6 @@ app.use('/content', async (req, res, next) => {
       return res.status(401).json({ error: 'Token inválido' });
     }
 
-    const requestPath = req.path.startsWith('/') ? req.path : `/${req.path}`;
     if (requestPath.includes('/api/videos-ssh/')) return next();
 
     const isVideoFile = /\.(mp4|avi|mov|wmv|flv|webm|mkv)$/i.test(requestPath);
@@ -365,6 +384,13 @@ app.use('/api/smil-management', smilManagementRoutes);
 app.use('/api/dados-conexao', dadosConexaoRoutes);
 app.use('/api/player-external', playerExternalRoutes);
 app.use('/api/player-port', playerPortRoutes);
+
+// Rota especial para servir arquivos de conteúdo via /api/content
+app.use('/api/content', (req, res) => {
+  const contentPath = req.path.replace(/^\//, '');
+  res.redirect(`/content/${contentPath}`);
+});
+
 // Middleware para verificar se tabelas necessárias existem
 async function ensureStreamingTablesExist() {
   try {

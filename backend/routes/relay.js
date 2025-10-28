@@ -211,7 +211,7 @@ router.post('/validate-url', authMiddleware, async (req, res) => {
 // POST /api/relay/start - Inicia relay
 router.post('/start', authMiddleware, async (req, res) => {
   try {
-    const { relay_url, relay_type, server_id } = req.body;
+    const { relay_url, relay_type, server_id, is_manual } = req.body;
     const userId = req.user.id;
     const userLogin = req.user.usuario || `user_${userId}`;
 
@@ -229,10 +229,35 @@ router.post('/start', authMiddleware, async (req, res) => {
     );
 
     if (existingRelay.length > 0) {
-      return res.status(400).json({
-        success: false,
-        error: 'Já existe um relay ativo. Pare o relay atual antes de iniciar um novo.'
-      });
+      // Se for relay manual, parar o relay atual primeiro
+      if (is_manual) {
+        console.log('🔄 Parando relay atual para iniciar novo relay manual...');
+        await db.execute(
+          'UPDATE relay_config SET status = "inativo", data_fim = NOW() WHERE codigo = ?',
+          [existingRelay[0].codigo]
+        );
+      } else {
+        return res.status(400).json({
+          success: false,
+          error: 'Já existe um relay ativo. Pare o relay atual antes de iniciar um novo.'
+        });
+      }
+    }
+
+    // Se for relay manual, parar também transmissões de playlist ativas
+    if (is_manual) {
+      const [activeTransmissions] = await db.execute(
+        'SELECT codigo FROM transmissoes WHERE codigo_stm = ? AND status = "ativa"',
+        [userId]
+      );
+
+      if (activeTransmissions.length > 0) {
+        console.log('🔄 Parando transmissão de playlist para iniciar relay manual...');
+        await db.execute(
+          'UPDATE transmissoes SET status = "finalizada", data_fim = NOW() WHERE codigo = ?',
+          [activeTransmissions[0].codigo]
+        );
+      }
     }
 
     // Buscar servidor do usuário

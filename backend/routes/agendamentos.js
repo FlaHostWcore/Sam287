@@ -79,10 +79,33 @@ router.post('/', authMiddleware, async (req, res) => {
       return res.status(400).json({ error: 'Data, playlist e horário de início são obrigatórios' });
     }
 
-    // Extrair hora e minuto do início
+    // Verificar duplicidade de agendamentos
     const inicioDate = new Date(inicio);
     const hora = inicioDate.getHours().toString().padStart(2, '0');
     const minuto = inicioDate.getMinutes().toString().padStart(2, '0');
+
+    // Verificar se já existe agendamento de playlist no mesmo horário
+    const [existingPlaylist] = await db.execute(
+      `SELECT pa.codigo, p.nome FROM playlists_agendamentos pa
+       JOIN playlists p ON pa.codigo_playlist = p.id
+       WHERE pa.codigo_stm = ? AND pa.data = ? AND pa.hora = ? AND pa.minuto = ?`,
+      [userId, data, hora, minuto]
+    );
+
+    // Verificar se já existe agendamento de relay no mesmo horário
+    const [existingRelay] = await db.execute(
+      `SELECT codigo, url_origem FROM relay_config
+       WHERE codigo_stm = ? AND DATE(data_inicio) = ? AND HOUR(data_inicio) = ? AND MINUTE(data_inicio) = ?`,
+      [userId, data, hora, minuto]
+    );
+
+    let warnings = [];
+    if (existingPlaylist.length > 0) {
+      warnings.push(`Já existe um agendamento de playlist "${existingPlaylist[0].nome}" neste horário.`);
+    }
+    if (existingRelay.length > 0) {
+      warnings.push(`Já existe um agendamento de relay neste horário.`);
+    }
 
     // Mapear frequência
     const frequenciaMap = {
@@ -137,7 +160,8 @@ router.post('/', authMiddleware, async (req, res) => {
 
     res.status(201).json({
       id: result.insertId,
-      message: 'Agendamento criado com sucesso'
+      message: 'Agendamento criado com sucesso',
+      warnings: warnings.length > 0 ? warnings : undefined
     });
   } catch (err) {
     console.error('Erro ao criar agendamento:', err);
