@@ -10,14 +10,22 @@ router.get('/', authMiddleware, async (req, res) => {
     // Para revendas, usar o ID efetivo do usuário
     const userId = req.user.effective_user_id || req.user.id;
 
+    // Verificar se colunas de logo existem
+    let hasLogoColumns = false;
+    try {
+      await db.execute('SELECT logo_id FROM playlists LIMIT 1');
+      hasLogoColumns = true;
+    } catch (err) {
+      hasLogoColumns = false;
+    }
+
+    const selectFields = hasLogoColumns
+      ? 'id, nome, data_criacao, total_videos, duracao_total, logo_id, logo_posicao, logo_tamanho, logo_opacidade'
+      : 'id, nome, data_criacao, total_videos, duracao_total';
+
     const [rows] = await db.execute(
-      `SELECT 
-        id,
-        nome,
-        data_criacao,
-        total_videos,
-        duracao_total
-       FROM playlists 
+      `SELECT ${selectFields}
+       FROM playlists
        WHERE (codigo_stm = ? OR codigo_stm IN (
          SELECT codigo_cliente FROM streamings WHERE codigo_cliente = ?
        ))
@@ -274,6 +282,73 @@ router.get('/:id/videos', authMiddleware, async (req, res) => {
   } catch (err) {
     console.error('Erro ao buscar vídeos da playlist:', err);
     res.status(500).json({ error: 'Erro ao buscar vídeos da playlist', details: err.message });
+  }
+});
+
+// PUT /api/playlists/:id/logo - Atualiza configurações de logo da playlist
+router.put('/:id/logo', authMiddleware, async (req, res) => {
+  try {
+    const playlistId = req.params.id;
+    const { logo_id, logo_posicao, logo_tamanho, logo_opacidade } = req.body;
+    // Para revendas, usar o ID efetivo do usuário
+    const userId = req.user.effective_user_id || req.user.id;
+
+    // Verificar se playlist pertence ao usuário
+    const [playlistRows] = await db.execute(
+      `SELECT id FROM playlists
+       WHERE id = ? AND (codigo_stm = ? OR codigo_stm IN (
+         SELECT codigo_cliente FROM streamings WHERE codigo_cliente = ?
+       ))`,
+      [playlistId, userId, userId]
+    );
+
+    if (playlistRows.length === 0) {
+      return res.status(404).json({ error: 'Playlist não encontrada' });
+    }
+
+    // Verificar se as colunas de logo existem na tabela playlists
+    try {
+      await db.execute('SELECT logo_id FROM playlists LIMIT 1');
+    } catch (columnError) {
+      // Colunas não existem, precisam ser criadas
+      console.warn('⚠️ Colunas de logo não existem na tabela playlists. Execute a migration primeiro.');
+      return res.status(500).json({
+        error: 'Sistema não está configurado para logos',
+        details: 'Execute a migration migration_playlist_logo_config.sql primeiro'
+      });
+    }
+
+    // Atualizar configurações de logo
+    await db.execute(
+      `UPDATE playlists
+       SET logo_id = ?, logo_posicao = ?, logo_tamanho = ?, logo_opacidade = ?
+       WHERE id = ?`,
+      [logo_id, logo_posicao, logo_tamanho, logo_opacidade, playlistId]
+    );
+
+    // Atualizar arquivo SMIL do usuário após modificar logo
+    try {
+      const userLogin = req.user.usuario || `user_1`;
+      const [serverRows] = await db.execute(
+        `SELECT servidor_id FROM folders
+         WHERE (user_id = ? OR user_id IN (
+           SELECT codigo FROM streamings WHERE codigo_cliente = ?
+         )) LIMIT 1`,
+        [userId, userId]
+      );
+      const serverId = serverRows.length > 0 ? serverRows[0].servidor_id : 1;
+
+      const PlaylistSMILService = require('../services/PlaylistSMILService');
+      await PlaylistSMILService.updateUserSMIL(userId, userLogin, serverId);
+      console.log(`✅ Arquivo SMIL atualizado após modificar logo da playlist ${playlistId}`);
+    } catch (smilError) {
+      console.warn('Erro ao atualizar arquivo SMIL:', smilError.message);
+    }
+
+    res.json({ success: true, message: 'Configurações de logo salvas com sucesso' });
+  } catch (err) {
+    console.error('Erro ao salvar configurações de logo:', err);
+    res.status(500).json({ error: 'Erro ao salvar configurações de logo', details: err.message });
   }
 });
 

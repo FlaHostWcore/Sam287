@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { ChevronLeft, Play, Trash2, CreditCard as Edit2, Save, X, Plus, List, Radio, Square, Activity, Users, Clock, Zap, Eye, ExternalLink, RefreshCw, AlertCircle, CheckCircle } from 'lucide-react';
+import { ChevronLeft, Play, Trash2, CreditCard as Edit2, Save, X, Plus, List, Radio, Square, Activity, Users, Clock, Zap, Eye, ExternalLink, RefreshCw, AlertCircle, CheckCircle, Image as ImageIcon, Settings } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
 import { toast } from 'react-toastify';
 import { useAuth } from '../../context/AuthContext';
@@ -32,12 +32,22 @@ interface Video {
   compativel?: string;
 }
 
+interface Logo {
+  id: number;
+  nome: string;
+  url: string;
+}
+
 interface Playlist {
   id: number;
   nome: string;
   data_criacao: string;
   total_videos: number;
   duracao_total: number;
+  logo_id?: number | null;
+  logo_posicao?: string;
+  logo_tamanho?: string;
+  logo_opacidade?: number;
 }
 
 interface PlaylistVideo {
@@ -166,6 +176,12 @@ const Playlists: React.FC = () => {
   const [startingTransmission, setStartingTransmission] = useState(false);
   const [showPlayerModal, setShowPlayerModal] = useState(false);
   const [playerUrl, setPlayerUrl] = useState('');
+  const [logos, setLogos] = useState<Logo[]>([]);
+  const [showLogoConfig, setShowLogoConfig] = useState(false);
+  const [selectedLogoId, setSelectedLogoId] = useState<number | null>(null);
+  const [logoPosition, setLogoPosition] = useState('topo-direita');
+  const [logoSize, setLogoSize] = useState('medio');
+  const [logoOpacity, setLogoOpacity] = useState(100);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -182,8 +198,9 @@ const Playlists: React.FC = () => {
   useEffect(() => {
     loadPlaylists();
     loadFolders();
+    loadLogos();
     checkTransmissionStatus();
-    
+
     // Verificar status de transmissão a cada 30 segundos
     const interval = setInterval(checkTransmissionStatus, 30000);
     return () => clearInterval(interval);
@@ -192,6 +209,11 @@ const Playlists: React.FC = () => {
   useEffect(() => {
     if (selectedPlaylist) {
       loadPlaylistVideos();
+      // Carregar configurações de logo da playlist
+      setSelectedLogoId(selectedPlaylist.logo_id || null);
+      setLogoPosition(selectedPlaylist.logo_posicao || 'topo-direita');
+      setLogoSize(selectedPlaylist.logo_tamanho || 'medio');
+      setLogoOpacity(selectedPlaylist.logo_opacidade || 100);
     }
   }, [selectedPlaylist]);
 
@@ -200,6 +222,22 @@ const Playlists: React.FC = () => {
       loadAvailableVideos();
     }
   }, [selectedFolder]);
+
+  const loadLogos = async () => {
+    try {
+      const token = await getToken();
+      const response = await fetch('/api/logos', {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setLogos(data);
+      }
+    } catch (error) {
+      console.error('Erro ao carregar logos:', error);
+    }
+  };
 
   const checkTransmissionStatus = async () => {
     try {
@@ -471,6 +509,42 @@ const Playlists: React.FC = () => {
       toast.error('Erro ao salvar playlist');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const saveLogoConfig = async () => {
+    if (!selectedPlaylist) {
+      toast.error('Selecione uma playlist');
+      return;
+    }
+
+    try {
+      const token = await getToken();
+      const response = await fetch(`/api/playlists/${selectedPlaylist.id}/logo`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          logo_id: selectedLogoId,
+          logo_posicao: logoPosition,
+          logo_tamanho: logoSize,
+          logo_opacidade: logoOpacity
+        })
+      });
+
+      if (response.ok) {
+        toast.success('Configurações de logo salvas com sucesso!');
+        setShowLogoConfig(false);
+        loadPlaylists();
+      } else {
+        const errorData = await response.json();
+        toast.error(errorData.error || 'Erro ao salvar configurações de logo');
+      }
+    } catch (error) {
+      console.error('Erro ao salvar configurações de logo:', error);
+      toast.error('Erro ao salvar configurações de logo');
     }
   };
 
@@ -1012,6 +1086,14 @@ const Playlists: React.FC = () => {
                 Embaralhar
               </button>
 
+              <button
+                onClick={() => setShowLogoConfig(true)}
+                className="bg-orange-600 text-white px-4 py-2 rounded-md hover:bg-orange-700 flex items-center"
+              >
+                <ImageIcon className="h-4 w-4 mr-2" />
+                Configurar Logo
+              </button>
+
               {/* NOVO: Botão para iniciar transmissão da playlist */}
               {transmissionStatus?.is_live && 
                transmissionStatus.stream_type === 'playlist' && 
@@ -1122,6 +1204,154 @@ const Playlists: React.FC = () => {
               >
                 <Save className="h-4 w-4 mr-2" />
                 Salvar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal Configurar Logo */}
+      {showLogoConfig && selectedPlaylist && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-2xl w-full mx-4 max-h-[90vh] overflow-y-auto">
+            <h3 className="text-lg font-semibold text-gray-900 mb-4">Configurar Logo da Playlist</h3>
+
+            <div className="space-y-4">
+              {/* Seleção de Logo */}
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Logo (Opcional)
+                </label>
+                <select
+                  value={selectedLogoId || ''}
+                  onChange={(e) => setSelectedLogoId(e.target.value ? parseInt(e.target.value) : null)}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:ring-primary-500 focus:border-primary-500"
+                >
+                  <option value="">Nenhum logo</option>
+                  {logos.map((logo) => (
+                    <option key={logo.id} value={logo.id}>
+                      {logo.nome}
+                    </option>
+                  ))}
+                </select>
+                <p className="text-xs text-gray-500 mt-1">
+                  Selecione um logo para exibir em todos os vídeos desta playlist
+                </p>
+              </div>
+
+              {selectedLogoId && (
+                <>
+                  {/* Preview do Logo */}
+                  <div className="border border-gray-200 rounded-lg p-4 bg-gray-50">
+                    <p className="text-sm font-medium text-gray-700 mb-2">Preview do Logo:</p>
+                    <img
+                      src={`https://stmv1.udicast.com/content${logos.find(l => l.id === selectedLogoId)?.url}`}
+                      alt="Preview"
+                      className="max-h-20 max-w-full object-contain"
+                      style={{ opacity: logoOpacity / 100 }}
+                    />
+                  </div>
+
+                  {/* Posição do Logo */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Posição do Logo
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { value: 'topo-esquerda', label: '↖️ Topo Esquerda' },
+                        { value: 'topo-centro', label: '⬆️ Topo Centro' },
+                        { value: 'topo-direita', label: '↗️ Topo Direita' },
+                        { value: 'centro-esquerda', label: '⬅️ Centro Esquerda' },
+                        { value: 'centro', label: '⏺️ Centro' },
+                        { value: 'centro-direita', label: '➡️ Centro Direita' },
+                        { value: 'baixo-esquerda', label: '↙️ Baixo Esquerda' },
+                        { value: 'baixo-centro', label: '⬇️ Baixo Centro' },
+                        { value: 'baixo-direita', label: '↘️ Baixo Direita' }
+                      ].map((pos) => (
+                        <button
+                          key={pos.value}
+                          onClick={() => setLogoPosition(pos.value)}
+                          className={`px-3 py-2 text-sm rounded-md border ${
+                            logoPosition === pos.value
+                              ? 'bg-primary-600 text-white border-primary-600'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          {pos.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Tamanho do Logo */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Tamanho do Logo
+                    </label>
+                    <div className="grid grid-cols-3 gap-2">
+                      {[
+                        { value: 'pequeno', label: 'Pequeno (10%)' },
+                        { value: 'medio', label: 'Médio (15%)' },
+                        { value: 'grande', label: 'Grande (20%)' }
+                      ].map((size) => (
+                        <button
+                          key={size.value}
+                          onClick={() => setLogoSize(size.value)}
+                          className={`px-3 py-2 text-sm rounded-md border ${
+                            logoSize === size.value
+                              ? 'bg-primary-600 text-white border-primary-600'
+                              : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                          }`}
+                        >
+                          {size.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Opacidade do Logo */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-2">
+                      Opacidade: {logoOpacity}%
+                    </label>
+                    <input
+                      type="range"
+                      min="0"
+                      max="100"
+                      value={logoOpacity}
+                      onChange={(e) => setLogoOpacity(parseInt(e.target.value))}
+                      className="w-full"
+                    />
+                    <div className="flex justify-between text-xs text-gray-500 mt-1">
+                      <span>Transparente</span>
+                      <span>Opaco</span>
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end space-x-3 mt-6">
+              <button
+                onClick={() => {
+                  setShowLogoConfig(false);
+                  // Resetar para valores da playlist
+                  setSelectedLogoId(selectedPlaylist.logo_id || null);
+                  setLogoPosition(selectedPlaylist.logo_posicao || 'topo-direita');
+                  setLogoSize(selectedPlaylist.logo_tamanho || 'medio');
+                  setLogoOpacity(selectedPlaylist.logo_opacidade || 100);
+                }}
+                className="px-4 py-2 bg-gray-300 text-gray-700 rounded-md hover:bg-gray-400"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={saveLogoConfig}
+                className="px-4 py-2 bg-primary-600 text-white rounded-md hover:bg-primary-700 flex items-center"
+              >
+                <Save className="h-4 w-4 mr-2" />
+                Salvar Configurações
               </button>
             </div>
           </div>

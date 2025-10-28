@@ -4,12 +4,12 @@ import { Image, Upload, Trash2, Plus, AlertCircle, CheckCircle } from 'lucide-re
 import { toast } from 'react-toastify';
 
 interface Logo {
-  codigo: number;
+  id: number;
   nome: string;
-  arquivo: string;
+  url: string;
   tamanho: number;
   tipo_arquivo: string;
-  data_upload: string;
+  created_at: string;
 }
 
 const GerenciarLogos: React.FC = () => {
@@ -35,6 +35,7 @@ const GerenciarLogos: React.FC = () => {
 
       if (response.ok) {
         const data = await response.json();
+        console.log('Logos carregados:', data);
         setLogos(data);
       }
     } catch (error) {
@@ -148,7 +149,7 @@ const GerenciarLogos: React.FC = () => {
           <AlertCircle className="h-5 w-5 text-blue-600 flex-shrink-0 mt-0.5" />
           <div className="text-sm text-blue-900">
             <p className="font-semibold mb-1">Como Funciona:</p>
-            <p>Os logos enviados aqui podem ser aplicados automaticamente em suas playlists de transmissão M3U8, sem necessidade de editar cada vídeo individualmente.</p>
+            <p>Os logos enviados aqui podem ser aplicados nas suas playlists. Vá até a seção de Playlists para configurar o logo, tamanho, posição e opacidade para cada playlist.</p>
           </div>
         </div>
       </div>
@@ -237,7 +238,7 @@ const GerenciarLogos: React.FC = () => {
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                 {logos.map((logo) => (
                   <div
-                    key={`logo-${logo.codigo}`}
+                    key={`logo-${logo.id}`}
                     className="border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
                   >
                     <div className="flex items-start justify-between mb-3">
@@ -247,11 +248,11 @@ const GerenciarLogos: React.FC = () => {
                           {formatFileSize(logo.tamanho)} • {logo.tipo_arquivo}
                         </p>
                         <p className="text-xs text-gray-400 mt-1">
-                          {new Date(logo.data_upload).toLocaleDateString('pt-BR')}
+                          {new Date(logo.created_at).toLocaleDateString('pt-BR')}
                         </p>
                       </div>
                       <button
-                        onClick={() => handleDelete(logo.codigo)}
+                        onClick={() => handleDelete(logo.id)}
                         className="text-red-600 hover:text-red-700 p-2 hover:bg-red-50 rounded-lg transition-colors"
                       >
                         <Trash2 className="h-4 w-4" />
@@ -259,9 +260,9 @@ const GerenciarLogos: React.FC = () => {
                     </div>
 
                     <div className="bg-gray-100 rounded-lg p-3 flex items-center justify-center min-h-[120px]">
-                      {logo.arquivo ? (
+                      {logo.url ? (
                         <img
-                          src={`/api/logos/${logo.codigo}/file`}
+                          src={`https://stmv1.udicast.com/content${logo.url}`}
                           alt={logo.nome}
                           className="max-h-[100px] max-w-full object-contain"
                           onError={(e) => {
@@ -271,12 +272,6 @@ const GerenciarLogos: React.FC = () => {
                       ) : (
                         <div className="text-gray-400 text-sm">Imagem não disponível</div>
                       )}
-                    </div>
-
-                    <div className="mt-3 pt-3 border-t border-gray-200">
-                      <button className="text-sm text-blue-600 hover:text-blue-700 font-medium">
-                        Aplicar em Playlist
-                      </button>
                     </div>
                   </div>
                 ))}
