@@ -631,43 +631,156 @@ router.delete('/:videoId', authMiddleware, async (req, res) => {
 router.post('/batch', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
-    const { video_ids, quality, custom_bitrate, custom_resolution } = req.body;
+    const userLogin = req.user.usuario || `user_${userId}`;
+    const { video_ids, quality, custom_bitrate, custom_resolution, delete_original } = req.body;
 
     if (!video_ids || !Array.isArray(video_ids) || video_ids.length === 0) {
-      return res.status(400).json({ 
-        success: false, 
-        error: 'Lista de vídeos é obrigatória' 
+      return res.status(400).json({
+        success: false,
+        error: 'Lista de vídeos é obrigatória'
       });
     }
 
     const results = [];
+    const userBitrateLimit = req.user.bitrate || 2500;
 
+    // Determinar configurações de conversão
+    let targetBitrate, targetResolution, qualityLabel;
+
+    if (quality === 'custom') {
+      if (!custom_bitrate || !custom_resolution) {
+        return res.status(400).json({
+          success: false,
+          error: 'Bitrate e resolução customizados são obrigatórios'
+        });
+      }
+
+      if (custom_bitrate > userBitrateLimit) {
+        return res.status(400).json({
+          success: false,
+          error: `Bitrate excede o limite do plano (${userBitrateLimit} kbps)`
+        });
+      }
+
+      targetBitrate = custom_bitrate;
+      targetResolution = custom_resolution;
+      qualityLabel = `Personalizado (${custom_bitrate} kbps)`;
+    } else {
+      const qualitySettings = {
+        baixa: { bitrate: 800, resolution: '854x480', label: 'Baixa (480p)' },
+        media: { bitrate: 1500, resolution: '1280x720', label: 'Média (720p)' },
+        alta: { bitrate: 2500, resolution: '1920x1080', label: 'Alta (1080p)' },
+        fullhd: { bitrate: Math.min(4000, userBitrateLimit), resolution: '1920x1080', label: 'Full HD' }
+      };
+
+      const settings = qualitySettings[quality];
+      if (!settings) {
+        return res.status(400).json({
+          success: false,
+          error: 'Qualidade inválida'
+        });
+      }
+
+      targetBitrate = settings.bitrate;
+      targetResolution = settings.resolution;
+      qualityLabel = settings.label;
+    }
+
+    // Processar cada vídeo
     for (const videoId of video_ids) {
       try {
-        // Fazer requisição individual para cada vídeo
-        const conversionResult = await new Promise((resolve, reject) => {
-          const mockReq = {
-            user: req.user,
-            body: { video_id: videoId, quality, custom_bitrate, custom_resolution }
-          };
-          
-          const mockRes = {
-            json: resolve,
-            status: () => ({ json: reject })
-          };
+        // Buscar dados do vídeo
+        const [videoRows] = await db.execute(
+          `SELECT v.*, f.servidor_id, f.nome_sanitizado as folder_name
+           FROM videos v
+           LEFT JOIN folders f ON v.pasta = f.id
+           WHERE v.id = ? AND v.codigo_cliente = ?`,
+          [videoId, userId]
+        );
 
-          // Simular chamada individual
-          router.post('/convert', authMiddleware, async (mockReq, mockRes) => {
-            // Lógica de conversão individual aqui
+        if (videoRows.length === 0) {
+          results.push({
+            video_id: videoId,
+            success: false,
+            error: 'Vídeo não encontrado'
           });
-        });
+          continue;
+        }
+
+        const video = videoRows[0];
+        const serverId = video.servidor_id || 1;
+
+        // Construir caminhos
+        let inputPath = video.caminho;
+        if (!inputPath.startsWith('/home/streaming/')) {
+          inputPath = `/home/streaming/${userLogin}/${video.folder_name}/${video.nome}`;
+        }
+
+        const outputFileName = video.nome.replace(/\.[^/.]+$/, `_${targetBitrate}kbps.mp4`);
+        const outputPath = `/home/streaming/${userLogin}/${video.folder_name}/${outputFileName}`;
+
+        // Verificar se arquivo existe
+        const fileInfo = await SSHManager.getFileInfo(serverId, inputPath);
+        if (!fileInfo.exists) {
+          results.push({
+            video_id: videoId,
+            success: false,
+            error: 'Arquivo não encontrado no servidor'
+          });
+          continue;
+        }
+
+        // Verificar se conversão já existe
+        const outputExists = await SSHManager.getFileInfo(serverId, outputPath);
+        if (outputExists.exists) {
+          results.push({
+            video_id: videoId,
+            success: false,
+            error: 'Conversão já existe'
+          });
+          continue;
+        }
+
+        // Comando FFmpeg
+        const [width, height] = targetResolution.split('x');
+        const logFile = `/tmp/conversion_${videoId}_${Date.now()}.log`;
+        const deleteOriginalCmd = delete_original ? ` && rm -f "${inputPath}"` : '';
+        const ffmpegCommand = `nohup bash -c 'ffmpeg -i "${inputPath}" -c:v libx264 -preset medium -crf 23 -b:v ${targetBitrate}k -maxrate ${targetBitrate}k -bufsize ${targetBitrate * 2}k -vf "scale=${width}:${height}:force_original_aspect_ratio=decrease,pad=${width}:${height}:ow-iw/2:oh-ih/2" -c:a aac -b:a 128k -movflags +faststart -f mp4 "${outputPath}" -y > ${logFile} 2>&1${deleteOriginalCmd}' > /dev/null 2>&1 &`;
+
+        // Executar conversão
+        await SSHManager.executeCommand(serverId, ffmpegCommand);
+
+        // Inserir registro no banco
+        const relativePath = `${userLogin}/${video.folder_name}/${outputFileName}`;
+        const [insertResult] = await db.execute(
+          `INSERT INTO videos (
+            nome, url, caminho, duracao, tamanho_arquivo,
+            codigo_cliente, pasta, bitrate_video, formato_original,
+            largura, altura, is_mp4, compativel, codec_video, origem
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'mp4', ?, ?, 1, 'processando', 'h264', 'conversao')`,
+          [
+            outputFileName,
+            `streaming/${relativePath}`,
+            outputPath,
+            video.duracao,
+            0,
+            userId,
+            video.pasta,
+            targetBitrate,
+            width,
+            height
+          ]
+        );
 
         results.push({
           video_id: videoId,
           success: true,
-          result: conversionResult
+          new_video_id: insertResult.insertId,
+          message: `Conversão iniciada: ${video.nome}`
         });
+
       } catch (error) {
+        console.error(`Erro ao converter vídeo ${videoId}:`, error);
         results.push({
           video_id: videoId,
           success: false,
@@ -680,16 +793,19 @@ router.post('/batch', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      message: `${successCount} de ${video_ids.length} conversões iniciadas`,
+      message: `${successCount} de ${video_ids.length} conversões iniciadas com sucesso`,
+      quality_label: qualityLabel,
+      target_bitrate: targetBitrate,
+      target_resolution: targetResolution,
       results: results
     });
 
   } catch (err) {
     console.error('Erro na conversão em lote:', err);
-    res.status(500).json({ 
-      success: false, 
-      error: 'Erro na conversão em lote', 
-      details: err.message 
+    res.status(500).json({
+      success: false,
+      error: 'Erro na conversão em lote',
+      details: err.message
     });
   }
 });
