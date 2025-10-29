@@ -222,6 +222,30 @@ router.post('/start', authMiddleware, async (req, res) => {
       });
     }
 
+    // Validar se URL M3U8 está online (igual ao PHP original)
+    if (/m3u8/i.test(relay_url)) {
+      try {
+        const fetch = require('node-fetch');
+        const urlCheck = await fetch(relay_url, {
+          method: 'HEAD',
+          timeout: 10000
+        });
+
+        if (!urlCheck.ok) {
+          return res.status(400).json({
+            success: false,
+            error: 'A URL informada parece estar offline, por favor verifique e tente novamente.',
+            details: `URL ${relay_url} status ${urlCheck.status} ${urlCheck.statusText}`
+          });
+        }
+
+        console.log(`✅ URL M3U8 validada: ${relay_url} (Status: ${urlCheck.status})`);
+      } catch (checkError) {
+        console.warn(`⚠️ Aviso ao validar URL M3U8: ${checkError.message}`);
+        // Continuar mesmo com erro de validação (pode ser timeout ou CORS)
+      }
+    }
+
     // Verificar se já existe relay ativo
     const [existingRelay] = await db.execute(
       'SELECT codigo FROM relay_config WHERE codigo_stm = ? AND status = "ativo"',
@@ -279,135 +303,110 @@ router.post('/start', authMiddleware, async (req, res) => {
     const relayId = relayResult.insertId;
 
     try {
-      // Construir comando FFmpeg para relay
-      const outputUrl = `rtmp://stmv1.udicast.com:1935/${userLogin}/${userLogin}_relay`;
-      
-      const ffmpegArgs = [
-        '-i', relay_url,
-        '-c', 'copy', // Copiar streams sem recodificar
-        '-f', 'flv',
-        '-reconnect', '1',
-        '-reconnect_at_eof', '1',
-        '-reconnect_streamed', '1',
-        '-reconnect_delay_max', '5',
-        '-timeout', '30000000', // 30 segundos timeout
-        '-y',
-        outputUrl
-      ];
-
-      console.log(`🔄 Iniciando relay FFmpeg: ${relay_url} -> ${outputUrl}`);
-      console.log(`📋 Comando: ffmpeg ${ffmpegArgs.join(' ')}`);
-
-      const ffmpegProcess = spawn('ffmpeg', ffmpegArgs, {
-        stdio: ['ignore', 'pipe', 'pipe'],
-        detached: false
-      });
-
-      let ffmpegOutput = '';
-      let ffmpegError = '';
-
-      ffmpegProcess.stdout.on('data', (data) => {
-        ffmpegOutput += data.toString();
-      });
-
-      ffmpegProcess.stderr.on('data', (data) => {
-        const output = data.toString();
-        ffmpegError += output;
-        
-        // Log de progresso do FFmpeg
-        if (output.includes('frame=') || output.includes('time=')) {
-          console.log(`📊 FFmpeg relay progress: ${output.trim()}`);
-        }
-      });
-
-      ffmpegProcess.on('close', async (code) => {
-        console.log(`🔚 Processo FFmpeg relay finalizado com código: ${code}`);
-        
-        // Atualizar status no banco
-        await db.execute(
-          'UPDATE relay_config SET status = "erro", data_fim = NOW(), erro_detalhes = ? WHERE codigo = ?',
-          [`Processo finalizado com código ${code}. Erro: ${ffmpegError.slice(-500)}`, relayId]
-        );
-
-        // Remover do mapa de processos ativos
-        activeRelays.delete(userId);
-      });
-
-      ffmpegProcess.on('error', async (error) => {
-        console.error('❌ Erro no processo FFmpeg relay:', error);
-        
-        // Atualizar status no banco
-        await db.execute(
-          'UPDATE relay_config SET status = "erro", data_fim = NOW(), erro_detalhes = ? WHERE codigo = ?',
-          [`Erro no processo: ${error.message}`, relayId]
-        );
-
-        // Remover do mapa de processos ativos
-        activeRelays.delete(userId);
-      });
-
-      // Salvar PID do processo
-      await db.execute(
-        'UPDATE relay_config SET processo_pid = ? WHERE codigo = ?',
-        [ffmpegProcess.pid, relayId]
+      // Buscar dados do streaming para autenticação
+      const [streamingData] = await db.execute(
+        'SELECT autenticar_live, senha_transmissao, aplicacao FROM streamings WHERE codigo_cliente = ? LIMIT 1',
+        [userId]
       );
 
-      // Adicionar ao mapa de processos ativos
-      activeRelays.set(userId, {
-        process: ffmpegProcess,
-        relayId: relayId,
-        startTime: new Date(),
-        url: relay_url
-      });
+      const streamingInfo = streamingData.length > 0 ? streamingData[0] : {};
+      const autenticar = (streamingInfo.autenticar_live === 'sim')
+        ? `${userLogin}:${streamingInfo.senha_transmissao}@`
+        : '';
+      const chave = (streamingInfo.aplicacao === 'tvstation') ? 'live' : userLogin;
 
-      // Aguardar alguns segundos para verificar se o processo iniciou corretamente
-      await new Promise(resolve => setTimeout(resolve, 3000));
+      // Construir output URL (sempre para localhost quando executado via SSH)
+      const outputUrl = `rtmp://${autenticar}localhost:1935/${userLogin}/${chave}`;
 
-      // Verificar se processo ainda está rodando
-      let processStillRunning = false;
+      // Finalizar relay atual se existir (mesmo padrão do PHP original)
+      const killCommand = `screen -ls | grep -o '[0-9]*\\.${userLogin}_relay' | xargs -I{} screen -X -S {} quit`;
+      console.log(`🛑 Finalizando relay anterior: ${killCommand}`);
+
       try {
-        process.kill(ffmpegProcess.pid, 0);
-        processStillRunning = true;
-      } catch (error) {
-        processStillRunning = false;
+        await SSHManager.executeCommand(serverId, `echo OK;${killCommand}`);
+        await new Promise(resolve => setTimeout(resolve, 2000)); // sleep 2 segundos
+      } catch (killError) {
+        console.warn(`⚠️ Aviso ao finalizar relay anterior: ${killError.message}`);
       }
 
-      if (!processStillRunning) {
+      // Comando FFmpeg exatamente como no PHP original
+      const ffmpegCommand = `/usr/local/bin/ffmpeg -re -reconnect 1 -reconnect_streamed 1 -reconnect_delay_max 2 -i '${relay_url}' -c:v copy -c:a copy -bsf:a aac_adtstoasc -preset medium -threads 1 -f flv '${outputUrl}'`;
+
+      // Iniciar relay em screen (exatamente como no PHP original)
+      const screenCommand = `screen -dmS ${userLogin}_relay bash -c '${ffmpegCommand}; exec sh'`;
+
+      console.log(`🔄 Iniciando relay via screen no servidor remoto`);
+      console.log(`📋 Comando: ${screenCommand}`);
+
+      const startResult = await SSHManager.executeCommand(serverId, `echo OK;${screenCommand}`);
+
+      if (!startResult.success) {
+        throw new Error(`Falha ao executar comando SSH: ${startResult.stderr}`);
+      }
+
+      // Aguardar 10 segundos (igual ao PHP original)
+      console.log(`⏳ Aguardando 10 segundos para estabilização...`);
+      await new Promise(resolve => setTimeout(resolve, 10000));
+
+      // Verificar se relay está rodando
+      const checkCommand = `screen -ls | grep ${userLogin}_relay`;
+      const checkResult = await SSHManager.executeCommand(serverId, checkCommand);
+
+      const isRunning = checkResult.success && checkResult.stdout && checkResult.stdout.includes(`${userLogin}_relay`);
+
+      if (!isRunning) {
+        console.error(`❌ Relay não está rodando após 10 segundos`);
+
         await db.execute(
-          'UPDATE relay_config SET status = "erro", erro_detalhes = "Processo FFmpeg falhou ao iniciar" WHERE codigo = ?',
+          'UPDATE relay_config SET status = "erro", erro_detalhes = "Falha ao ativar relay, verifique se a URL está correta" WHERE codigo = ?',
           [relayId]
         );
-        
+
         return res.status(500).json({
           success: false,
-          error: 'Falha ao iniciar processo de relay. Verifique se a URL está acessível.'
+          error: 'Falha ao ativar relay, verifique se a URL está correta e tente novamente!'
         });
       }
 
-      console.log(`✅ Relay iniciado com sucesso - PID: ${ffmpegProcess.pid}`);
+      // Obter PID do screen
+      const pidCommand = `screen -ls | grep -o '[0-9]*\\.${userLogin}_relay' | cut -d. -f1`;
+      const pidResult = await SSHManager.executeCommand(serverId, pidCommand);
+      const screenPid = pidResult.stdout ? parseInt(pidResult.stdout.trim()) : null;
+
+      // Salvar PID do screen
+      if (screenPid) {
+        await db.execute(
+          'UPDATE relay_config SET processo_pid = ? WHERE codigo = ?',
+          [screenPid, relayId]
+        );
+      }
+
+      console.log(`✅ Relay iniciado com sucesso via screen (PID: ${screenPid || 'desconhecido'})`);
 
       res.json({
         success: true,
-        message: 'Relay ativado com sucesso',
+        message: 'Relay ativado com sucesso!',
         relay_id: relayId,
         relay_url,
-        relay_type: relay_type || 'rtmp',
+        relay_type: relay_type || 'auto',
         output_url: outputUrl,
-        processo_pid: ffmpegProcess.pid
+        processo_pid: screenPid,
+        method: 'screen_ssh'
       });
 
     } catch (ffmpegError) {
-      console.error('Erro ao iniciar FFmpeg:', ffmpegError);
-      
+      console.error('❌ Erro ao iniciar relay:', ffmpegError);
+
       // Atualizar status como erro
       await db.execute(
         'UPDATE relay_config SET status = "erro", erro_detalhes = ? WHERE codigo = ?',
-        [`Erro ao iniciar FFmpeg: ${ffmpegError.message}`, relayId]
+        [`Erro ao iniciar relay: ${ffmpegError.message}`, relayId]
       );
 
       return res.status(500).json({
         success: false,
-        error: 'Erro ao iniciar processo de relay'
+        error: 'Erro ao iniciar processo de relay',
+        details: ffmpegError.message
       });
     }
 
@@ -421,6 +420,7 @@ router.post('/start', authMiddleware, async (req, res) => {
 router.post('/stop', authMiddleware, async (req, res) => {
   try {
     const userId = req.user.id;
+    const userLogin = req.user.usuario || `user_${userId}`;
 
     // Buscar relay ativo
     const [relayRows] = await db.execute(
@@ -437,23 +437,24 @@ router.post('/stop', authMiddleware, async (req, res) => {
 
     const relay = relayRows[0];
 
-    // Parar processo FFmpeg se estiver rodando
-    if (relay.processo_pid) {
-      try {
-        process.kill(relay.processo_pid, 'SIGTERM');
-        console.log(`🛑 Processo FFmpeg ${relay.processo_pid} finalizado`);
-        
-        // Aguardar um pouco e forçar kill se necessário
-        setTimeout(() => {
-          try {
-            process.kill(relay.processo_pid, 'SIGKILL');
-          } catch (error) {
-            // Processo já foi finalizado
-          }
-        }, 5000);
-      } catch (error) {
-        console.log(`⚠️ Processo ${relay.processo_pid} já estava finalizado`);
-      }
+    // Buscar servidor do usuário
+    const [serverRows] = await db.execute(
+      'SELECT servidor_id FROM folders WHERE user_id = ? LIMIT 1',
+      [userId]
+    );
+
+    const serverId = serverRows.length > 0 ? serverRows[0].servidor_id : 1;
+
+    // Finalizar screen do relay (exatamente como no PHP original)
+    const killCommand = `screen -ls | grep -o '[0-9]*\\.${userLogin}_relay' | xargs -I{} screen -X -S {} quit`;
+
+    console.log(`🛑 Finalizando relay: ${killCommand}`);
+
+    try {
+      await SSHManager.executeCommand(serverId, `echo OK;${killCommand}`);
+      console.log(`✅ Screen ${userLogin}_relay finalizado com sucesso`);
+    } catch (error) {
+      console.warn(`⚠️ Aviso ao finalizar screen: ${error.message}`);
     }
 
     // Remover do mapa de processos ativos
@@ -467,12 +468,16 @@ router.post('/stop', authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      message: 'Relay desativado com sucesso'
+      message: 'Relay desativado com sucesso!'
     });
 
   } catch (error) {
     console.error('Erro ao parar relay:', error);
-    res.status(500).json({ success: false, error: 'Erro interno do servidor' });
+    res.status(500).json({
+      success: false,
+      error: 'Erro interno do servidor',
+      details: error.message
+    });
   }
 });
 
@@ -618,45 +623,18 @@ cleanupOrphanedProcesses();
 // Cleanup ao fechar aplicação
 process.on('SIGINT', async () => {
   console.log('\n🛑 Finalizando todos os relays ativos...');
-  
-  for (const [userId, relayData] of activeRelays) {
-    try {
-      if (relayData.process && relayData.process.pid) {
-        process.kill(relayData.process.pid, 'SIGTERM');
-        
-        // Atualizar status no banco
-        await db.execute(
-          'UPDATE relay_config SET status = "inativo", data_fim = NOW() WHERE codigo = ?',
-          [relayData.relayId]
-        );
-      }
-    } catch (error) {
-      console.error(`Erro ao finalizar relay do usuário ${userId}:`, error);
-    }
-  }
-  
+
+  // Nota: Como relays agora rodam em screen no servidor remoto,
+  // eles continuarão rodando mesmo após o backend parar.
+  // Para finalizar, seria necessário executar comando SSH para cada usuário.
+
   activeRelays.clear();
   process.exit(0);
 });
 
 process.on('SIGTERM', async () => {
   console.log('\n🛑 Finalizando todos os relays ativos...');
-  
-  for (const [userId, relayData] of activeRelays) {
-    try {
-      if (relayData.process && relayData.process.pid) {
-        process.kill(relayData.process.pid, 'SIGTERM');
-        
-        await db.execute(
-          'UPDATE relay_config SET status = "inativo", data_fim = NOW() WHERE codigo = ?',
-          [relayData.relayId]
-        );
-      }
-    } catch (error) {
-      console.error(`Erro ao finalizar relay do usuário ${userId}:`, error);
-    }
-  }
-  
+
   activeRelays.clear();
   process.exit(0);
 });
