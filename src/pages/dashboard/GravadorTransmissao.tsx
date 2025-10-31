@@ -31,16 +31,25 @@ const GravadorTransmissao: React.FC = () => {
   useEffect(() => {
     let timer: NodeJS.Timeout;
     if (recording.isRecording && recording.startTime) {
-      timer = setInterval(() => {
-        const start = new Date(recording.startTime!).getTime();
-        const now = Date.now();
-        const diff = Math.max(0, Math.floor((now - start) / 1000));
-        setElapsed(diff);
-      }, 1000);
+      const updateTimer = () => {
+        try {
+          const start = new Date(recording.startTime!).getTime();
+          const now = Date.now();
+          const diff = Math.max(0, Math.floor((now - start) / 1000));
+          setElapsed(diff);
+        } catch (error) {
+          console.error('Erro ao calcular tempo:', error);
+        }
+      };
+
+      updateTimer();
+      timer = setInterval(updateTimer, 1000);
     } else {
       setElapsed(0);
     }
-    return () => clearInterval(timer);
+    return () => {
+      if (timer) clearInterval(timer);
+    };
   }, [recording.isRecording, recording.startTime]);
 
   const checkRecordingStatus = async () => {
@@ -52,14 +61,19 @@ const GravadorTransmissao: React.FC = () => {
 
       if (response.ok) {
         const data = await response.json();
-        setRecording(data);
+
+        setRecording(prev => ({
+          ...prev,
+          ...data,
+          startTime: data.startTime || prev.startTime
+        }));
 
         if (data.isRecording && data.startTime) {
           const start = new Date(data.startTime).getTime();
           const now = Date.now();
           const diff = Math.max(0, Math.floor((now - start) / 1000));
           setElapsed(diff);
-        } else {
+        } else if (!data.isRecording) {
           setElapsed(0);
         }
       }

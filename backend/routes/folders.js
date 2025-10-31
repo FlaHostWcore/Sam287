@@ -501,7 +501,7 @@ router.post('/:id/sync', authMiddleware, async (req, res) => {
 
     // Buscar dados da pasta
     const [folderRows] = await db.execute(
-      'SELECT nome_sanitizado, servidor_id FROM folders WHERE id = ? AND user_id = ?',
+      'SELECT id, nome_sanitizado, servidor_id FROM folders WHERE id = ? AND user_id = ?',
       [folderId, userId]
     );
 
@@ -519,28 +519,33 @@ router.post('/:id/sync', authMiddleware, async (req, res) => {
       if (!userResult.success) {
         console.warn('Aviso ao criar diretório do usuário:', userResult.error);
       }
-      
+
       // Criar a pasta específica
       const folderResult = await SSHManager.createUserFolder(serverId, userLogin, folderName);
       if (!folderResult.success) {
         console.warn('Aviso ao criar pasta específica:', folderResult.error);
       }
-      
-      console.log(`✅ Pasta ${folderName} sincronizada`);
-      
+
+      // Sincronizar arquivos do servidor com banco de dados
+      const syncResult = await syncFolderWithServer(folder.id, userLogin, folderName, serverId, userId);
+
+      console.log(`✅ Pasta ${folderName} sincronizada (${syncResult.files_synced} arquivos)`);
+
       res.json({
         success: true,
         message: 'Pasta sincronizada com sucesso',
         folder_name: folderName,
         server_path: `/home/streaming/${userLogin}/${folderName}`,
+        files_synced: syncResult.files_synced,
+        files_found: syncResult.files_found,
         user_result: userResult,
         folder_result: folderResult
       });
     } catch (sshError) {
       console.error('Erro na sincronização:', sshError);
-      res.status(500).json({ 
+      res.status(500).json({
         error: 'Erro ao sincronizar pasta com servidor',
-        details: sshError.message 
+        details: sshError.message
       });
     }
   } catch (err) {
@@ -548,5 +553,58 @@ router.post('/:id/sync', authMiddleware, async (req, res) => {
     res.status(500).json({ error: 'Erro na sincronização da pasta', details: err.message });
   }
 });
+
+// Função para sincronizar arquivos do servidor com banco de dados
+async function syncFolderWithServer(folderId, userLogin, folderName, serverId, userId) {
+  try {
+    // Listar arquivos do servidor
+    const listCommand = `find /home/streaming/${userLogin}/${folderName} -maxdepth 1 -type f -exec ls -lh {} \\; 2>/dev/null || echo ""`;
+    const listResult = await SSHManager.executeCommand(serverId, listCommand);
+
+    let filesFound = 0;
+    let filesSynced = 0;
+
+    if (listResult.success && listResult.stdout) {
+      const lines = listResult.stdout.trim().split('\n').filter(line => line.length > 0);
+      filesFound = lines.length;
+
+      for (const line of lines) {
+        const parts = line.split(/\s+/);
+        if (parts.length >= 9) {
+          const fileName = parts.slice(8).join(' ');
+          const fileSize = parseInt(parts[4]) || 0;
+          const modifiedDate = `${parts[5]} ${parts[6]} ${parts[7]}`;
+
+          // Verificar se arquivo já existe no banco
+          const [existingFiles] = await db.execute(
+            'SELECT id FROM videos WHERE pasta = ? AND nome = ? AND codigo_cliente = ?',
+            [folderId, fileName, userId]
+          );
+
+          if (existingFiles.length === 0) {
+            // Inserir novo arquivo
+            await db.execute(
+              `INSERT INTO videos (
+                pasta, nome, tamanho, data_criacao, codigo_cliente,
+                status, data_atualizacao
+              ) VALUES (?, ?, ?, NOW(), ?, 1, NOW())`,
+              [folderId, fileName, fileSize, userId]
+            );
+
+            console.log(`  📹 Arquivo sincronizado: ${fileName} (${(fileSize / 1024 / 1024).toFixed(2)} MB)`);
+            filesSynced++;
+          }
+        }
+      }
+
+      console.log(`  ✅ Sincronização concluída: ${filesSynced}/${filesFound} novos arquivos`);
+    }
+
+    return { files_found: filesFound, files_synced: filesSynced };
+  } catch (error) {
+    console.error('Erro ao sincronizar arquivos:', error);
+    return { files_found: 0, files_synced: 0, error: error.message };
+  }
+}
 
 module.exports = router;

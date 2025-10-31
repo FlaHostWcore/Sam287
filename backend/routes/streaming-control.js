@@ -3,6 +3,13 @@ const router = express.Router();
 const StreamingControlService = require('../services/StreamingControlService');
 const authMiddleware = require('../middlewares/authMiddleware');
 
+function formatDuration(seconds) {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  const s = seconds % 60;
+  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}:${String(s).padStart(2, '0')}`;
+}
+
 // Middleware de autenticação
 router.use(authMiddleware);
 
@@ -1312,6 +1319,7 @@ router.post('/start-recording', async (req, res) => {
 router.post('/stop-recording', async (req, res) => {
     try {
         const userId = req.user?.id || req.user?.codigo;
+        const userLogin = req.user?.usuario || `user_${userId}`;
         const db = require('../config/database');
 
         const [recordings] = await db.execute(
@@ -1350,21 +1358,39 @@ router.post('/stop-recording', async (req, res) => {
         // Aguardar um pouco para o arquivo ser finalizado
         await new Promise(resolve => setTimeout(resolve, 3000));
 
-        // Obter tamanho do arquivo no servidor remoto
+        // Obter informações do arquivo no servidor remoto
         let fileSize = 0;
+        let duration = 0;
         if (recording.caminho_completo) {
             try {
                 const SSHManager = require('../config/SSHManager');
+
+                // Obter tamanho do arquivo
                 const sizeCommand = `stat -c%s "${recording.caminho_completo}" 2>/dev/null || echo "0"`;
                 const sizeResult = await SSHManager.executeCommand(serverId, sizeCommand);
                 fileSize = parseInt(sizeResult.stdout.trim()) || 0;
                 console.log(`📊 Tamanho do arquivo obtido: ${fileSize} bytes`);
+
+                // Obter duração do vídeo usando ffprobe
+                try {
+                    const durationCommand = `ffprobe -v error -show_entries format=duration -of default=noprint_wrappers=1:nokey=1:noprint_wrappers=1 "${recording.caminho_completo}" 2>/dev/null || echo "0"`;
+                    const durationResult = await SSHManager.executeCommand(serverId, durationCommand);
+                    duration = Math.floor(parseFloat(durationResult.stdout.trim()) || 0);
+                    console.log(`⏱️ Duração do vídeo: ${duration} segundos`);
+                } catch (durationError) {
+                    console.warn(`⚠️ Aviso ao obter duração: ${durationError.message}`);
+                }
             } catch (statError) {
-                console.warn(`⚠️ Aviso ao obter tamanho do arquivo: ${statError.message}`);
+                console.warn(`⚠️ Aviso ao obter informações do arquivo: ${statError.message}`);
             }
         }
 
-        // Atualizar registro no banco
+        // Calcular duração da gravação pelo timestamp
+        const startTime = new Date(recording.data_inicio).getTime();
+        const endTime = Date.now();
+        const recordingDuration = Math.floor((endTime - startTime) / 1000);
+
+        // Atualizar registro no banco com duração
         await db.execute(
             'UPDATE recording_sessions SET status = "stopped", data_fim = NOW(), tamanho_arquivo = ? WHERE codigo = ?',
             [fileSize, recording.codigo]
@@ -1373,6 +1399,34 @@ router.post('/stop-recording', async (req, res) => {
         console.log(`✅ Gravação finalizada para usuário ${userId}`);
         console.log(`📁 Arquivo: ${recording.caminho_completo}`);
         console.log(`📊 Tamanho: ${(fileSize / 1024 / 1024).toFixed(2)} MB`);
+        console.log(`⏱️ Duração gravação: ${recordingDuration}s, Duração vídeo: ${duration}s`);
+
+        // Sincronizar pasta de gravações com banco de dados
+        try {
+            const [folderRows] = await db.execute(
+                'SELECT id FROM folders WHERE user_id = ? AND nome_sanitizado = "gravacoes"',
+                [userId]
+            );
+
+            if (folderRows.length > 0) {
+                const folderId = folderRows[0].id;
+
+                // Inserir novo arquivo de gravação no banco
+                await db.execute(
+                    `INSERT INTO videos (
+                        pasta, nome, tamanho, data_criacao, codigo_cliente,
+                        status, data_atualizacao, duracao
+                    ) VALUES (?, ?, ?, NOW(), ?, 1, NOW(), ?)
+                    ON DUPLICATE KEY UPDATE
+                    tamanho = ?, duracao = ?, data_atualizacao = NOW()`,
+                    [folderId, recording.arquivo_destino, fileSize, userId, duration || recordingDuration, fileSize, duration || recordingDuration]
+                );
+
+                console.log(`📹 Vídeo de gravação sincronizado no banco de dados`);
+            }
+        } catch (syncError) {
+            console.warn(`⚠️ Aviso ao sincronizar vídeo: ${syncError.message}`);
+        }
 
         return res.json({
             success: true,
@@ -1380,7 +1434,10 @@ router.post('/stop-recording', async (req, res) => {
             fileName: recording.arquivo_destino,
             filePath: recording.caminho_completo,
             fileSize: fileSize,
-            fileSizeMB: (fileSize / 1024 / 1024).toFixed(2)
+            fileSizeMB: (fileSize / 1024 / 1024).toFixed(2),
+            duration: duration || recordingDuration,
+            durationFormatted: formatDuration(duration || recordingDuration),
+            recordingDuration: recordingDuration
         });
 
     } catch (error) {
