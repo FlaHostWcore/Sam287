@@ -6,6 +6,7 @@ const compression = require('compression');
 const path = require('path');
 const db = require('./config/database');
 const SSHManager = require('./config/SSHManager');
+const RelayScheduler = require('./services/RelayScheduler');
 
 const authRoutes = require('./routes/auth');
 const foldersRoutes = require('./routes/folders');
@@ -506,7 +507,7 @@ async function startServer() {
     const dbConnected = await db.testConnection();
     if (!dbConnected) console.error('❌ Não foi possível conectar ao banco de dados');
 
-    app.listen(PORT, () => {
+    app.listen(PORT, async () => {
       console.log(`🚀 Servidor rodando na porta ${PORT}`);
       console.log(`🌐 Frontend: http://localhost:3000`);
       console.log(`🔧 Backend: http://localhost:${PORT}`);
@@ -514,10 +515,26 @@ async function startServer() {
       console.log(`🔧 API test: http://localhost:${PORT}/api/test`);
       console.log(`🔗 SSH Manager inicializado para uploads remotos`);
       console.log(`📡 Ambiente: ${process.env.NODE_ENV || 'development'}`);
+
+      // Iniciar RelayScheduler
+      try {
+        await RelayScheduler.start();
+        console.log(`⏰ RelayScheduler ativado para verificar agendamentos`);
+      } catch (error) {
+        console.error('Erro ao iniciar RelayScheduler:', error);
+      }
     });
 
-    process.on('SIGINT', () => { SSHManager.closeAllConnections(); process.exit(0); });
-    process.on('SIGTERM', () => { SSHManager.closeAllConnections(); process.exit(0); });
+    process.on('SIGINT', async () => {
+      await RelayScheduler.stop();
+      SSHManager.closeAllConnections();
+      process.exit(0);
+    });
+    process.on('SIGTERM', async () => {
+      await RelayScheduler.stop();
+      SSHManager.closeAllConnections();
+      process.exit(0);
+    });
   } catch (error) {
     process.exit(1);
   }

@@ -1148,10 +1148,24 @@ router.get('/recording-status', async (req, res) => {
         }
 
         const recording = recordings[0];
+
+        // Validar data_inicio
+        let startTime = null;
+        if (recording.data_inicio) {
+            try {
+                const dateObj = new Date(recording.data_inicio);
+                if (!isNaN(dateObj.getTime())) {
+                    startTime = dateObj.toISOString();
+                }
+            } catch (err) {
+                console.warn(`⚠️ Erro ao parsear data_inicio: ${recording.data_inicio}`, err);
+            }
+        }
+
         return res.json({
             isRecording: true,
             fileName: recording.arquivo_destino,
-            startTime: new Date(recording.data_inicio).toISOString(),
+            startTime: startTime || new Date().toISOString(),
             recordingId: recording.codigo
         });
 

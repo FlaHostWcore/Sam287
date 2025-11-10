@@ -105,6 +105,39 @@ const GerenciarVideos: React.FC = () => {
     }
   };
 
+  const syncAllFolders = async () => {
+    try {
+      setLoading(true);
+      toast.info('Sincronizando pastas com servidor...');
+
+      const token = await getToken();
+      const response = await fetch('/api/folders/sync-all', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`
+        }
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        toast.success(`Sincronização: ${result.new_folders_created} pastas novas, ${result.total_synced} pastas sincronizadas`);
+        await loadFolders();
+        if (selectedFolder) {
+          await loadVideos();
+        }
+      } else {
+        toast.error(result.error || 'Erro na sincronização');
+      }
+    } catch (error) {
+      console.error('Erro ao sincronizar pastas:', error);
+      toast.error('Erro ao sincronizar pastas');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const loadFolderInfo = async (folderId: string) => {
     try {
       const token = await getToken();
@@ -612,13 +645,24 @@ const GerenciarVideos: React.FC = () => {
       <div className="bg-white rounded-lg shadow-sm p-6">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold text-gray-800">Pastas</h2>
-          <button
-            onClick={() => setShowNewFolderModal(true)}
-            className="bg-primary-600 text-white px-4 py-2 rounded-md hover:bg-primary-700 flex items-center"
-          >
-            <FolderPlus className="h-4 w-4 mr-2" />
-            Nova Pasta
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={syncAllFolders}
+              disabled={loading}
+              className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 flex items-center disabled:opacity-50"
+              title="Sincronizar todas as pastas do servidor com banco de dados"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${loading ? 'animate-spin' : ''}`} />
+              Sincronizar Pastas
+            </button>
+            <button
+              onClick={() => setShowNewFolderModal(true)}
+              className="bg-primary-600 text-white px-4 py-2 rounded-md hover:bg-primary-700 flex items-center"
+            >
+              <FolderPlus className="h-4 w-4 mr-2" />
+              Nova Pasta
+            </button>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">

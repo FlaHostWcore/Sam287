@@ -163,17 +163,32 @@ const AgendamentosRelay: React.FC = () => {
   };
 
   const getFrequencyText = (schedule: RelaySchedule): string => {
-    if (schedule.frequencia === 1) {
-      return `Executar no dia ${new Date(schedule.data).toLocaleDateString('pt-BR')} às ${schedule.hora}:${schedule.minuto}`;
-    } else if (schedule.frequencia === 2) {
-      return `Executar diariamente às ${schedule.hora}:${schedule.minuto}`;
-    } else {
-      const diasSemana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
-      if (!schedule.dias) {
-        return `Executar às ${schedule.hora}:${schedule.minuto}`;
+    // Extrair hora e minuto do campo hora (formato HH:MM)
+    const timeStr = schedule.hora || '00:00';
+    const [hour, minute] = timeStr.split(':');
+
+    try {
+      if (schedule.frequencia === 1) {
+        if (!schedule.data) return `Executar às ${timeStr}`;
+        const dateObj = new Date(schedule.data);
+        if (isNaN(dateObj.getTime())) return `Executar às ${timeStr}`;
+        return `Executar no dia ${dateObj.toLocaleDateString('pt-BR')} às ${timeStr}`;
+      } else if (schedule.frequencia === 2) {
+        return `Executar diariamente às ${timeStr}`;
+      } else {
+        const diasSemana = ['Segunda', 'Terça', 'Quarta', 'Quinta', 'Sexta', 'Sábado', 'Domingo'];
+        if (!schedule.dias) {
+          return `Executar às ${timeStr}`;
+        }
+        const dias = schedule.dias.split(',').filter(d => d).map(d => {
+          const dayNum = parseInt(d) - 1;
+          return dayNum >= 0 && dayNum < 7 ? diasSemana[dayNum] : d;
+        }).join(', ');
+        return `Executar ${dias} às ${timeStr}`;
       }
-      const dias = schedule.dias.split(',').filter(d => d).map(d => diasSemana[parseInt(d) - 1]).join(', ');
-      return `Executar ${dias} às ${schedule.hora}:${schedule.minuto}`;
+    } catch (error) {
+      console.error('Erro ao formatar frequência:', error);
+      return `Executar às ${timeStr}`;
     }
   };
 

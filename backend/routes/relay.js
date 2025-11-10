@@ -522,6 +522,92 @@ router.get('/logs/:id', authMiddleware, async (req, res) => {
   }
 });
 
+// POST /api/relay/schedules - Criar agendamento de relay
+router.post('/schedules', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const { servidor_relay, frequencia, data, hora, duracao, dias } = req.body;
+
+    if (!servidor_relay) {
+      return res.status(400).json({
+        success: false,
+        error: 'URL do relay é obrigatória'
+      });
+    }
+
+    if (!frequencia || !hora) {
+      return res.status(400).json({
+        success: false,
+        error: 'Frequência e horário são obrigatórios'
+      });
+    }
+
+    // Validar hora no formato HH:MM
+    if (!/^\d{2}:\d{2}$/.test(hora)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Horário deve estar no formato HH:MM'
+      });
+    }
+
+    // Para frequência 1 (data específica), data é obrigatória
+    if (frequencia === 1 && !data) {
+      return res.status(400).json({
+        success: false,
+        error: 'Data é obrigatória para agendamento em data específica'
+      });
+    }
+
+    // Para frequência 3 (dias da semana), dias é obrigatório
+    if (frequencia === 3 && (!dias || dias.length === 0)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Selecione os dias da semana'
+      });
+    }
+
+    // Separar hora em hora e minuto
+    const [horaNum, minutoNum] = hora.split(':').map(str => str.padStart(2, '0'));
+
+    // Converter array de dias para string
+    const diasStr = frequencia === 3 ? dias.join(',') : '';
+
+    // Inserir agendamento
+    const [result] = await db.execute(
+      `INSERT INTO relay_config (
+        codigo_stm, url_origem, tipo_relay, frequencia, data, hora, minuto,
+        dias, duracao, status, data_criacao
+      ) VALUES (?, ?, 'auto', ?, ?, ?, ?, ?, ?, 'agendado', NOW())`,
+      [
+        userId,
+        servidor_relay,
+        frequencia,
+        data || null,
+        horaNum,
+        minutoNum,
+        diasStr,
+        duracao || '00:00'
+      ]
+    );
+
+    console.log(`✅ Agendamento de relay criado: ID ${result.insertId}`);
+
+    res.json({
+      success: true,
+      message: 'Agendamento criado com sucesso',
+      schedule_id: result.insertId
+    });
+
+  } catch (error) {
+    console.error('Erro ao criar agendamento:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao criar agendamento',
+      details: error.message
+    });
+  }
+});
+
 // GET /api/relay/schedules - Listar agendamentos de relay
 router.get('/schedules', authMiddleware, async (req, res) => {
   try {
@@ -531,29 +617,91 @@ router.get('/schedules', authMiddleware, async (req, res) => {
     const [schedules] = await db.execute(
       `SELECT
         codigo as id,
-        url_origem,
+        url_origem as servidor_relay,
         tipo_relay,
         status,
         data_inicio,
         data_fim,
-        erro_detalhes
+        erro_detalhes,
+        frequencia,
+        hora,
+        minuto,
+        dias,
+        duracao,
+        data
        FROM relay_config
        WHERE codigo_stm = ?
        ORDER BY data_inicio DESC`,
       [userId]
     );
 
-    res.json({
-      success: true,
-      schedules: schedules
-    });
+    // Formatar resposta para compatibilidade com frontend
+    const formattedSchedules = schedules.map(schedule => ({
+      id: schedule.id,
+      servidor_relay: schedule.servidor_relay || '',
+      frequencia: schedule.frequencia || 1,
+      data: schedule.data || '',
+      hora: schedule.hora || '00:00',
+      minuto: schedule.minuto || '00',
+      dias: schedule.dias || '',
+      duracao: schedule.duracao || '00:00',
+      status: schedule.status ? 1 : 0,
+      tipo_relay: schedule.tipo_relay,
+      data_inicio: schedule.data_inicio,
+      data_fim: schedule.data_fim,
+      erro_detalhes: schedule.erro_detalhes
+    }));
+
+    res.json(formattedSchedules);
 
   } catch (error) {
     console.error('Erro ao listar agendamentos de relay:', error);
     res.status(500).json({
       success: false,
       error: 'Erro ao listar agendamentos',
-      schedules: []
+      details: error.message
+    });
+  }
+});
+
+// DELETE /api/relay/schedules/:id - Deletar agendamento
+router.delete('/schedules/:id', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const scheduleId = req.params.id;
+
+    // Verificar se agendamento pertence ao usuário
+    const [schedules] = await db.execute(
+      'SELECT codigo FROM relay_config WHERE codigo = ? AND codigo_stm = ?',
+      [scheduleId, userId]
+    );
+
+    if (schedules.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'Agendamento não encontrado'
+      });
+    }
+
+    // Deletar agendamento
+    await db.execute(
+      'DELETE FROM relay_config WHERE codigo = ?',
+      [scheduleId]
+    );
+
+    console.log(`✅ Agendamento ${scheduleId} deletado`);
+
+    res.json({
+      success: true,
+      message: 'Agendamento removido com sucesso'
+    });
+
+  } catch (error) {
+    console.error('Erro ao deletar agendamento:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao deletar agendamento',
+      details: error.message
     });
   }
 });

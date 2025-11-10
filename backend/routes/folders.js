@@ -607,4 +607,84 @@ async function syncFolderWithServer(folderId, userLogin, folderName, serverId, u
   }
 }
 
+// POST /api/folders/sync-all - Sincronizar todas as pastas do servidor
+router.post('/sync-all', authMiddleware, async (req, res) => {
+  try {
+    const userId = req.user.id;
+    const userLogin = req.user.usuario || `user_${userId}`;
+
+    console.log(`🔄 Sincronizando todas as pastas para usuário ${userId}`);
+
+    // Buscar servidor do usuário
+    const [serverRows] = await db.execute(
+      'SELECT codigo_servidor FROM streamings WHERE codigo_cliente = ? LIMIT 1',
+      [userId]
+    );
+    const serverId = serverRows.length > 0 ? serverRows[0].codigo_servidor : 1;
+
+    // Listar todas as pastas do servidor
+    const listCommand = `find /home/streaming/${userLogin} -maxdepth 1 -type d ! -name "${userLogin}" 2>/dev/null | sort`;
+    const listResult = await SSHManager.executeCommand(serverId, listCommand);
+
+    let newFoldersCreated = 0;
+    let totalSynced = 0;
+
+    if (listResult.success && listResult.stdout) {
+      const folderPaths = listResult.stdout.trim().split('\n').filter(line => line.length > 0);
+      console.log(`📁 Encontradas ${folderPaths.length} pastas no servidor`);
+
+      for (const folderPath of folderPaths) {
+        const folderName = folderPath.split('/').pop();
+
+        if (!folderName || folderName === userLogin) continue;
+
+        // Sanitizar nome da pasta
+        const sanitizedName = VideoURLBuilder.sanitizeFolderName(folderName);
+
+        // Verificar se pasta já existe no banco
+        const [existingFolders] = await db.execute(
+          'SELECT id FROM folders WHERE user_id = ? AND nome_sanitizado = ?',
+          [userId, sanitizedName]
+        );
+
+        if (existingFolders.length === 0) {
+          // Inserir nova pasta no banco
+          await db.execute(
+            `INSERT INTO folders (
+              user_id, nome, nome_sanitizado, caminho_servidor, servidor_id,
+              espaco_usado, data_criacao, status
+            ) VALUES (?, ?, ?, ?, ?, 0, NOW(), 1)`,
+            [userId, sanitizedName, sanitizedName, folderPath, serverId]
+          );
+
+          console.log(`  ✅ Nova pasta criada no banco: ${sanitizedName}`);
+          newFoldersCreated++;
+        } else {
+          console.log(`  ℹ️ Pasta já existe: ${sanitizedName}`);
+        }
+
+        totalSynced++;
+      }
+    } else {
+      console.log(`⚠️ Nenhuma pasta encontrada ou erro ao listar`);
+    }
+
+    console.log(`✅ Sincronização concluída: ${newFoldersCreated} novas, ${totalSynced} total`);
+
+    res.json({
+      success: true,
+      message: 'Sincronização de pastas concluída',
+      new_folders_created: newFoldersCreated,
+      total_synced: totalSynced
+    });
+  } catch (error) {
+    console.error('Erro ao sincronizar todas as pastas:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Erro ao sincronizar pastas',
+      details: error.message
+    });
+  }
+});
+
 module.exports = router;
